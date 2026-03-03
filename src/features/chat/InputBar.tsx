@@ -102,9 +102,33 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
     };
   }, []);
 
-  const { voiceState, wakeWordEnabled, toggleWakeWord } = useVoiceInput((text) => {
+  const { voiceState, interimTranscript, wakeWordEnabled, toggleWakeWord } = useVoiceInput((text) => {
     onSend('[voice] ' + text);
   }, agentName, voiceLang, voicePhrasesVersion);
+
+  // Live transcription preview: write interim transcript to textarea during recording
+  useEffect(() => {
+    if (voiceState === 'recording' && inputRef.current) {
+      if (interimTranscript) {
+        inputRef.current.value = interimTranscript;
+        inputRef.current.style.fontStyle = 'italic';
+        inputRef.current.style.opacity = '0.5';
+        inputRef.current.style.height = 'auto';
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 160) + 'px';
+      } else {
+        inputRef.current.value = '';
+        inputRef.current.style.height = 'auto';
+      }
+    } else if (inputRef.current) {
+      // Clear provisional styling when not recording
+      inputRef.current.style.fontStyle = '';
+      inputRef.current.style.opacity = '';
+      if (voiceState === 'transcribing') {
+        inputRef.current.value = '';
+        inputRef.current.style.height = 'auto';
+      }
+    }
+  }, [interimTranscript, voiceState]);
 
   const processFiles = useCallback((files: FileList | File[]) => {
     const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));

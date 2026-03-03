@@ -140,6 +140,7 @@ export function useVoiceInput(
 ) {
   const [state, setState] = useState<VoiceState>('idle');
   const stateRef = useRef<VoiceState>('idle');
+  const [interimTranscript, setInterimTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
   const clearError = useCallback(() => setError(null), []);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -293,6 +294,15 @@ export function useVoiceInput(
             }
           }
         }
+        // Surface interim transcript for live preview (once per event, outside loop)
+        if (modeRef.current === 'stop') {
+          let full = '';
+          for (let j = 0; j < event.results.length; j++) {
+            full += event.results[j][0].transcript;
+          }
+          const cleaned = full.replace(stopPhrasesRegexRef.current, '').trim();
+          setInterimTranscript(cleaned);
+        }
       };
 
       recognition.onerror = (event: { error: string }) => {
@@ -380,6 +390,7 @@ export function useVoiceInput(
   }, [setVoiceState]);
 
   const doDiscard = useCallback(() => {
+    setInterimTranscript('');
     wakeTriggeredRef.current = false;
     intentionalStopRef.current = true;
     try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
@@ -401,6 +412,7 @@ export function useVoiceInput(
   const doStopAndTranscribe = useCallback(() => {
     const mr = mediaRecorderRef.current;
     if (!mr || mr.state !== 'recording') return;
+    setInterimTranscript('');
     wakeTriggeredRef.current = false;
     intentionalStopRef.current = true;
     try { recognitionRef.current?.abort(); } catch { /* already stopped */ }
@@ -565,6 +577,7 @@ export function useVoiceInput(
 
   return {
     voiceState: state,
+    interimTranscript,
     startRecording: doStartRecording,
     stopAndTranscribe: doStopAndTranscribe,
     discardRecording: doDiscard,
