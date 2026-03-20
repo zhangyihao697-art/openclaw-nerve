@@ -20,9 +20,10 @@ import type { Memory, TokenData, GatewayEvent } from '@/types';
 const MEMORY_POLL_INTERVAL = 60000; // 60s fallback (was 10s)
 const TOKEN_POLL_INTERVAL = 60000;  // 60s fallback (was 30s)
 
-export type FileChangedHandler = (path: string) => void;
+export type FileChangedHandler = (path: string, agentId: string) => void;
 
 export interface DashboardDataOptions {
+  agentId?: string;
   /** Called when a file.changed SSE event arrives */
   onFileChanged?: FileChangedHandler;
 }
@@ -35,8 +36,18 @@ export interface DashboardDataState {
   refreshTokens: (signal?: AbortSignal) => Promise<void>;
 }
 
+interface MemoryChangedEventData {
+  agentId?: string;
+}
+
+interface FileChangedEventData {
+  path?: string;
+  agentId?: string;
+}
+
 export function useDashboardData(options: DashboardDataOptions = {}): DashboardDataState {
   const { subscribe, connectionState } = useGateway();
+  const activeAgentId = options.agentId ?? 'main';
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memoriesLoading, setMemoriesLoading] = useState(true);
   const [tokenData, setTokenData] = useState<TokenData | null>(null);
@@ -45,11 +56,15 @@ export function useDashboardData(options: DashboardDataOptions = {}): DashboardD
   const refreshMemoriesRef = useRef<((signal?: AbortSignal) => Promise<void>) | undefined>(undefined);
   const refreshTokensRef = useRef<((signal?: AbortSignal) => Promise<void>) | undefined>(undefined);
   const onFileChangedRef = useRef(options.onFileChanged);
+  const agentIdRef = useRef(activeAgentId);
 
   const refreshMemories = useCallback(async (signal?: AbortSignal) => {
+    const requestAgentId = activeAgentId;
+    const params = new URLSearchParams({ agentId: requestAgentId });
+
     try {
-      const res = await fetch('/api/memories', { signal });
-      if (!signal?.aborted && res.ok) {
+      const res = await fetch(`/api/memories?${params.toString()}`, { signal });
+      if (!signal?.aborted && res.ok && agentIdRef.current === requestAgentId) {
         setMemories(await res.json());
       }
     } catch (err) {
@@ -57,11 +72,11 @@ export function useDashboardData(options: DashboardDataOptions = {}): DashboardD
         console.debug('[DashboardData] Failed to refresh memories:', err.message);
       }
     } finally {
-      if (!signal?.aborted) {
+      if (!signal?.aborted && agentIdRef.current === requestAgentId) {
         setMemoriesLoading(false);
       }
     }
-  }, []);
+  }, [activeAgentId]);
 
   const refreshTokens = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -76,27 +91,40 @@ export function useDashboardData(options: DashboardDataOptions = {}): DashboardD
     }
   }, []);
 
-  // Sync refs in effect to avoid render-time mutations
+  // These refs back long-lived SSE/WS handlers and must update during render.
+  // Waiting for a passive effect leaves a switch-gap where an old agent event can
+  // be accepted under stale refs after the UI already rerendered.
+  refreshMemoriesRef.current = refreshMemories;
+  refreshTokensRef.current = refreshTokens;
+  onFileChangedRef.current = options.onFileChanged;
+  agentIdRef.current = activeAgentId;
+
   useEffect(() => {
-    refreshMemoriesRef.current = refreshMemories;
-    refreshTokensRef.current = refreshTokens;
-    onFileChangedRef.current = options.onFileChanged;
-  }, [refreshMemories, refreshTokens, options.onFileChanged]);
+    setMemories([]);
+    setMemoriesLoading(true);
+  }, [activeAgentId]);
 
   // SSE event handler for real-time updates from backend
   const handleSSEEvent = useCallback((event: ServerEvent) => {
     if (event.event === 'memory.changed') {
-      console.debug('[DashboardData] SSE memory.changed, refreshing...');
-      refreshMemoriesRef.current?.();
+      const data = event.data as MemoryChangedEventData | undefined;
+      const eventAgentId = typeof data?.agentId === 'string' ? data.agentId : undefined;
+
+      if (!eventAgentId || eventAgentId === agentIdRef.current) {
+        console.debug('[DashboardData] SSE memory.changed, refreshing...');
+        refreshMemoriesRef.current?.();
+      }
     }
     if (event.event === 'tokens.updated') {
       console.debug('[DashboardData] SSE tokens.updated, refreshing...');
       refreshTokensRef.current?.();
     }
     if (event.event === 'file.changed') {
-      const data = event.data as { path?: string };
-      if (data?.path) {
-        onFileChangedRef.current?.(data.path);
+      const data = event.data as FileChangedEventData | undefined;
+      const eventAgentId = typeof data?.agentId === 'string' ? data.agentId : undefined;
+
+      if (data?.path && eventAgentId === agentIdRef.current) {
+        onFileChangedRef.current?.(data.path, eventAgentId);
       }
     }
   }, []);

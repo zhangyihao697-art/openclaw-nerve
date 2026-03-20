@@ -5,10 +5,19 @@
  * Connection management is handled by useConnectionManager.
  * Dashboard data fetching is handled by useDashboardData.
  */
-import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  useReducer,
+  lazy,
+  Suspense,
+} from 'react';
 import { AlertTriangle, CheckCircle2, RotateCw } from 'lucide-react';
 import { useGateway } from '@/contexts/GatewayContext';
-import { useSessionContext } from '@/contexts/SessionContext';
+import { useSessionContext, type SpawnSessionOpts } from '@/contexts/SessionContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useSettings, type STTInputMode } from '@/contexts/SettingsContext';
 import { getSessionKey } from '@/types';
@@ -19,6 +28,7 @@ import { ConnectDialog } from '@/features/connect/ConnectDialog';
 import { TopBar } from '@/components/TopBar';
 import { StatusBar } from '@/components/StatusBar';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { WorkspaceSwitchDialog } from '@/components/WorkspaceSwitchDialog';
 import { ChatPanel, type ChatPanelHandle } from '@/features/chat/ChatPanel';
 import type { TTSProvider } from '@/features/tts/useTTS';
 import type { ViewMode } from '@/features/command-palette/commands';
@@ -28,8 +38,10 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { createCommands } from '@/features/command-palette/commands';
 import { PanelErrorBoundary } from '@/components/PanelErrorBoundary';
 import { SpawnAgentDialog } from '@/features/sessions/SpawnAgentDialog';
-import { FileTreePanel, TabbedContentArea, useOpenFiles } from '@/features/file-browser';
-import { getSessionDisplayLabel } from '@/features/sessions/sessionKeys';
+import { FileTreePanel, TabbedContentArea, useOpenFiles, type FileTreeChangeEvent } from '@/features/file-browser';
+import { buildAgentRootSessionKey, getSessionDisplayLabel } from '@/features/sessions/sessionKeys';
+import { shouldGuardWorkspaceSwitch } from '@/features/workspace/workspaceSwitchGuard';
+import { getWorkspaceAgentId, getWorkspaceRootSessionKey } from '@/features/workspace/workspaceScope';
 
 // Lazy-loaded features (not needed in initial bundle)
 const SettingsDrawer = lazy(() => import('@/features/settings/SettingsDrawer').then(m => ({ default: m.SettingsDrawer })));
@@ -44,6 +56,24 @@ const KanbanPanel = lazy(() => import('@/features/kanban/KanbanPanel').then(m =>
 
 interface AppProps {
   onLogout?: () => void;
+}
+
+interface PendingWorkspaceSwitch {
+  targetLabel: string;
+  execute: () => Promise<void>;
+  resolve: (didSwitch: boolean) => void;
+  reject: (error: unknown) => void;
+}
+
+function buildWorkspaceSwitchErrorMessage(result: {
+  failedPath?: string;
+  conflict?: boolean;
+}): string {
+  const fileLabel = result.failedPath || 'a dirty file';
+  if (result.conflict) {
+    return `${fileLabel} changed on disk. Resolve it before switching agents.`;
+  }
+  return `Could not save ${fileLabel}. Resolve it before switching agents.`;
 }
 
 export default function App({ onLogout }: AppProps) {
@@ -92,8 +122,9 @@ export default function App({ onLogout }: AppProps) {
     serverSideAuth,
   } = useConnectionManager();
 
-  // Track last changed file path for tree refresh
-  const [lastChangedPath, setLastChangedPath] = useState<string | null>(null);
+  // Track file change events for tree refresh. Sequence keeps repeated same-path updates visible.
+  const [lastChangedEvent, setLastChangedEvent] = useState<FileTreeChangeEvent | null>(null);
+  const fileTreeChangeSequenceRef = useRef(0);
 
   const initialCompactLayout = typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches;
   const initialDesktopFileBrowserCollapsed = (() => {
@@ -145,36 +176,102 @@ export default function App({ onLogout }: AppProps) {
     setFileBrowserCollapsed(prev => !prev);
   }, [setFileBrowserCollapsed]);
 
+  const workspaceAgentId = useMemo(() => getWorkspaceAgentId(currentSession), [currentSession]);
+
   // File browser state
   const {
     openFiles, activeTab, setActiveTab,
-    openFile, closeFile, updateContent, saveFile, reloadFile, initializeFiles,
+    openFile, closeFile, updateContent, saveFile, reloadFile,
     handleFileChanged, remapOpenPaths, closeOpenPathsByPrefix,
-  } = useOpenFiles();
+    hasDirtyFiles, saveAllDirtyFiles, discardAllDirtyFiles,
+  } = useOpenFiles(workspaceAgentId);
 
-  // Save with conflict toast
-  const [saveToast, setSaveToast] = useState<{ path: string; type: 'conflict' | 'error' } | null>(null);
+  // Save with workspace-scoped conflict toast
+  const [saveToast, setSaveToast] = useState<{
+    agentId: string;
+    path: string;
+    type: 'conflict';
+    workspaceVersion: number;
+  } | null>(null);
+  const [workspaceVersion, bumpWorkspaceVersion] = useReducer((version: number) => version + 1, 0);
+  const saveToastTimerRef = useRef<number | null>(null);
+  const workspaceAgentIdRef = useRef(workspaceAgentId);
+  const [pendingWorkspaceSwitch, setPendingWorkspaceSwitch] = useState<PendingWorkspaceSwitch | null>(null);
+  const [workspaceSwitchAction, setWorkspaceSwitchAction] = useState<'save' | 'discard' | null>(null);
+  const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
+
+  const clearSaveToastTimer = useCallback(() => {
+    if (saveToastTimerRef.current !== null) {
+      window.clearTimeout(saveToastTimerRef.current);
+      saveToastTimerRef.current = null;
+    }
+  }, []);
+
+  const dismissSaveToast = useCallback(() => {
+    clearSaveToastTimer();
+    setSaveToast(null);
+  }, [clearSaveToastTimer]);
+
+  const showSaveToastForAgent = useCallback((
+    targetAgentId: string,
+    nextToast: { path: string; type: 'conflict' },
+  ) => {
+    if (workspaceAgentIdRef.current !== targetAgentId) return;
+
+    clearSaveToastTimer();
+    const toastForAgent = {
+      ...nextToast,
+      agentId: targetAgentId,
+      workspaceVersion,
+    };
+    setSaveToast(toastForAgent);
+    saveToastTimerRef.current = window.setTimeout(() => {
+      setSaveToast((currentToast) => (currentToast === toastForAgent ? null : currentToast));
+      saveToastTimerRef.current = null;
+    }, 5000);
+  }, [clearSaveToastTimer, workspaceVersion]);
+
+  useEffect(() => {
+    workspaceAgentIdRef.current = workspaceAgentId;
+    bumpWorkspaceVersion();
+    clearSaveToastTimer();
+  }, [clearSaveToastTimer, workspaceAgentId]);
+
+  useEffect(() => () => clearSaveToastTimer(), [clearSaveToastTimer]);
+
   const handleSaveFile = useCallback(async (filePath: string) => {
+    const requestAgentId = workspaceAgentId;
     const result = await saveFile(filePath);
+
+    if (workspaceAgentIdRef.current !== requestAgentId) {
+      return;
+    }
+
     if (!result.ok) {
       if (result.conflict) {
-        setSaveToast({ path: filePath, type: 'conflict' });
-        // Auto-dismiss after 5s
-        setTimeout(() => setSaveToast(null), 5000);
+        showSaveToastForAgent(requestAgentId, { path: filePath, type: 'conflict' });
       }
-    } else {
-      setSaveToast(null);
+      return;
     }
-  }, [saveFile]);
 
-  // Single file.changed handler — feeds both open files and tree refresh
-  const onFileChanged = useCallback((path: string) => {
-    handleFileChanged(path);
-    setLastChangedPath(path);
+    dismissSaveToast();
+  }, [dismissSaveToast, saveFile, showSaveToastForAgent, workspaceAgentId]);
+
+  // Single file.changed handler, feeds both open files and tree refresh.
+  const onFileChanged = useCallback((path: string, targetAgentId: string) => {
+    handleFileChanged(path, targetAgentId);
+    setLastChangedEvent({
+      path,
+      agentId: targetAgentId,
+      sequence: ++fileTreeChangeSequenceRef.current,
+    });
   }, [handleFileChanged]);
 
   // Dashboard data (extracted hook) — single SSE connection handles all events
-  const { memories, memoriesLoading, tokenData, refreshMemories } = useDashboardData({ onFileChanged });
+  const { memories, memoriesLoading, tokenData, refreshMemories } = useDashboardData({
+    agentId: workspaceAgentId,
+    onFileChanged,
+  });
 
   // UI state
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -300,12 +397,115 @@ export default function App({ onLogout }: AppProps) {
   const contextTokens = currentSessionData?.totalTokens ?? 0;
   const contextLimit = currentSessionData?.contextTokens || getContextLimit(model);
 
-  // Restore previously open file tabs
-  useEffect(() => {
-    if (connectionState === 'connected') {
-      initializeFiles();
+  const getWorkspaceSwitchLabel = useCallback((sessionKey: string) => {
+    const targetSession = sessions.find((session) => getSessionKey(session) === sessionKey);
+    if (targetSession) {
+      return getSessionDisplayLabel(targetSession, agentName);
     }
-  }, [connectionState, initializeFiles]);
+
+    const targetAgentId = getWorkspaceAgentId(sessionKey);
+    return targetAgentId === 'main' ? `${agentName} (main)` : `Agent ${targetAgentId}`;
+  }, [agentName, sessions]);
+
+  const requestWorkspaceTransition = useCallback((
+    targetSessionKey: string,
+    targetLabel: string,
+    execute: () => Promise<void>,
+  ) => {
+    if (!shouldGuardWorkspaceSwitch(currentSession, targetSessionKey, hasDirtyFiles)) {
+      return execute().then(() => true);
+    }
+
+    setWorkspaceSwitchAction(null);
+    setWorkspaceSwitchError(null);
+
+    return new Promise<boolean>((resolve, reject) => {
+      setPendingWorkspaceSwitch({
+        targetLabel,
+        execute,
+        resolve,
+        reject,
+      });
+    });
+  }, [currentSession, hasDirtyFiles]);
+
+  const handleCancelWorkspaceSwitch = useCallback(() => {
+    if (workspaceSwitchAction || !pendingWorkspaceSwitch) return;
+
+    pendingWorkspaceSwitch.resolve(false);
+    setPendingWorkspaceSwitch(null);
+    setWorkspaceSwitchAction(null);
+    setWorkspaceSwitchError(null);
+  }, [pendingWorkspaceSwitch, workspaceSwitchAction]);
+
+  const handleSaveAndSwitch = useCallback(async () => {
+    if (!pendingWorkspaceSwitch || workspaceSwitchAction) return;
+
+    const pendingSwitch = pendingWorkspaceSwitch;
+    setWorkspaceSwitchAction('save');
+    setWorkspaceSwitchError(null);
+
+    const result = await saveAllDirtyFiles();
+    if (!result.ok) {
+      setWorkspaceSwitchAction(null);
+      setWorkspaceSwitchError(buildWorkspaceSwitchErrorMessage(result));
+      return;
+    }
+
+    try {
+      await pendingSwitch.execute();
+      pendingSwitch.resolve(true);
+      setPendingWorkspaceSwitch(null);
+      setWorkspaceSwitchError(null);
+    } catch (error) {
+      pendingSwitch.reject(error);
+      setPendingWorkspaceSwitch(null);
+      setWorkspaceSwitchError(null);
+    } finally {
+      setWorkspaceSwitchAction(null);
+    }
+  }, [pendingWorkspaceSwitch, saveAllDirtyFiles, workspaceSwitchAction]);
+
+  const handleDiscardAndSwitch = useCallback(async () => {
+    if (!pendingWorkspaceSwitch || workspaceSwitchAction) return;
+
+    const pendingSwitch = pendingWorkspaceSwitch;
+    setWorkspaceSwitchAction('discard');
+    setWorkspaceSwitchError(null);
+    discardAllDirtyFiles();
+
+    try {
+      await pendingSwitch.execute();
+      pendingSwitch.resolve(true);
+      setPendingWorkspaceSwitch(null);
+      setWorkspaceSwitchError(null);
+    } catch (error) {
+      pendingSwitch.reject(error);
+      setPendingWorkspaceSwitch(null);
+      setWorkspaceSwitchError(null);
+    } finally {
+      setWorkspaceSwitchAction(null);
+    }
+  }, [discardAllDirtyFiles, pendingWorkspaceSwitch, workspaceSwitchAction]);
+
+  const handleSessionChange = useCallback((key: string) => {
+    void requestWorkspaceTransition(key, getWorkspaceSwitchLabel(key), async () => {
+      setCurrentSession(key);
+    });
+  }, [getWorkspaceSwitchLabel, requestWorkspaceTransition, setCurrentSession]);
+
+  const handleSpawnSession = useCallback((opts: SpawnSessionOpts) => {
+    const targetSessionKey = opts.kind === 'root'
+      ? buildAgentRootSessionKey(opts.agentName?.trim() || 'agent', sessions.map(getSessionKey))
+      : opts.parentSessionKey?.trim() || getWorkspaceRootSessionKey(currentSession) || currentSession;
+    const targetLabel = opts.kind === 'root'
+      ? opts.agentName?.trim() || 'New agent'
+      : getWorkspaceSwitchLabel(targetSessionKey);
+
+    return requestWorkspaceTransition(targetSessionKey, targetLabel, async () => {
+      await spawnSession(opts);
+    });
+  }, [currentSession, getWorkspaceSwitchLabel, requestWorkspaceTransition, sessions, spawnSession]);
 
   // Boot sequence: fade in panels when connected
   useEffect(() => {
@@ -321,7 +521,6 @@ export default function App({ onLogout }: AppProps) {
   useEffect(() => {
     const currentCount = agentLogEntries.length;
     if (currentCount > prevLogCount.current) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: transient UI glow follows external log updates
       setLogGlow(true);
       const timer = setTimeout(() => setLogGlow(false), 500);
       prevLogCount.current = currentCount;
@@ -364,11 +563,6 @@ export default function App({ onLogout }: AppProps) {
     return () => mq.removeListener(onChange);
   }, [handleCompactLayoutChange]);
 
-  // Handler for session changes
-  const handleSessionChange = useCallback((key: string) => {
-    setCurrentSession(key);
-  }, [setCurrentSession]);
-
   // Handlers for TTS provider/model changes
   const handleTtsProviderChange = useCallback((provider: TTSProvider) => {
     setTtsProvider(provider);
@@ -390,16 +584,22 @@ export default function App({ onLogout }: AppProps) {
     setSttModel(model);
   }, [setSttModel]);
 
+  const visibleSaveToast = saveToast?.agentId === workspaceAgentId
+    && saveToast.workspaceVersion === workspaceVersion
+    ? saveToast
+    : null;
+
   const chatContent = (
     <TabbedContentArea
       activeTab={activeTab}
       openFiles={openFiles}
+      workspaceAgentId={workspaceAgentId}
       onSelectTab={setActiveTab}
       onCloseTab={closeFile}
       onContentChange={updateContent}
       onSaveFile={handleSaveFile}
-      saveToast={saveToast}
-      onDismissToast={() => setSaveToast(null)}
+      saveToast={visibleSaveToast}
+      onDismissToast={dismissSaveToast}
       onReloadFile={reloadFile}
       onRetryFile={reloadFile}
       chatPanel={
@@ -448,7 +648,7 @@ export default function App({ onLogout }: AppProps) {
               onSelect={onSelect}
               onRefresh={refreshSessions}
               onDelete={deleteSession}
-              onSpawn={spawnSession}
+              onSpawn={handleSpawnSession}
               onRename={renameSession}
               onAbort={abortSession}
               isLoading={sessionsLoading}
@@ -458,7 +658,14 @@ export default function App({ onLogout }: AppProps) {
         </div>
         <div className="shell-panel flex-1 flex flex-col min-h-0 overflow-hidden rounded-[28px]">
           <PanelErrorBoundary name="Workspace">
-            <WorkspacePanel memories={memories} onRefreshMemories={refreshMemories} memoriesLoading={memoriesLoading} onOpenBoard={() => setViewMode('kanban')} onOpenTask={openTaskInBoard} />
+            <WorkspacePanel
+              workspaceAgentId={workspaceAgentId}
+              memories={memories}
+              onRefreshMemories={refreshMemories}
+              memoriesLoading={memoriesLoading}
+              onOpenBoard={() => setViewMode('kanban')}
+              onOpenTask={openTaskInBoard}
+            />
           </PanelErrorBoundary>
         </div>
       </div>
@@ -477,7 +684,7 @@ export default function App({ onLogout }: AppProps) {
           onSelect={handleSessionChange}
           onRefresh={refreshSessions}
           onDelete={deleteSession}
-          onSpawn={spawnSession}
+          onSpawn={handleSpawnSession}
           onRename={renameSession}
           onAbort={abortSession}
           isLoading={sessionsLoading}
@@ -491,7 +698,15 @@ export default function App({ onLogout }: AppProps) {
   const compactWorkspacePanel = (
     <Suspense fallback={<div className="p-4 text-muted-foreground text-xs">Loading workspace…</div>}>
       <PanelErrorBoundary name="Workspace">
-        <WorkspacePanel memories={memories} onRefreshMemories={refreshMemories} memoriesLoading={memoriesLoading} compact onOpenBoard={() => setViewMode('kanban')} onOpenTask={openTaskInBoard} />
+        <WorkspacePanel
+          workspaceAgentId={workspaceAgentId}
+          memories={memories}
+          onRefreshMemories={refreshMemories}
+          memoriesLoading={memoriesLoading}
+          compact
+          onOpenBoard={() => setViewMode('kanban')}
+          onOpenTask={openTaskInBoard}
+        />
       </PanelErrorBoundary>
     </Suspense>
   );
@@ -619,8 +834,9 @@ export default function App({ onLogout }: AppProps) {
           <div className={viewMode === 'kanban' ? 'hidden' : fileBrowserCollapsed ? 'contents' : 'h-full min-h-0'}>
             <PanelErrorBoundary name="File Explorer">
               <FileTreePanel
+                workspaceAgentId={workspaceAgentId}
                 onOpenFile={openFile}
-                lastChangedPath={lastChangedPath}
+                lastChangedEvent={lastChangedEvent}
                 onRemapOpenPaths={remapOpenPaths}
                 onCloseOpenPaths={closeOpenPathsByPrefix}
                 isCompactLayout={false}
@@ -643,8 +859,9 @@ export default function App({ onLogout }: AppProps) {
               <div className="pointer-events-auto h-full w-[min(86vw,320px)] max-w-full animate-in slide-in-from-left-4 duration-200">
                 <PanelErrorBoundary name="File Explorer">
                   <FileTreePanel
+                    workspaceAgentId={workspaceAgentId}
                     onOpenFile={openFile}
-                    lastChangedPath={lastChangedPath}
+                    lastChangedEvent={lastChangedEvent}
                     onRemapOpenPaths={remapOpenPaths}
                     onCloseOpenPaths={closeOpenPathsByPrefix}
                     isCompactLayout={true}
@@ -738,11 +955,21 @@ export default function App({ onLogout }: AppProps) {
         variant="warning"
       />
 
+      <WorkspaceSwitchDialog
+        open={pendingWorkspaceSwitch !== null}
+        targetLabel={pendingWorkspaceSwitch?.targetLabel || 'the other agent'}
+        pendingAction={workspaceSwitchAction}
+        error={workspaceSwitchError}
+        onSaveAndSwitch={handleSaveAndSwitch}
+        onDiscardAndSwitch={handleDiscardAndSwitch}
+        onCancel={handleCancelWorkspaceSwitch}
+      />
+
       {/* Spawn Agent Dialog (from command palette) */}
       <SpawnAgentDialog
         open={spawnDialogOpen}
         onOpenChange={setSpawnDialogOpen}
-        onSpawn={spawnSession}
+        onSpawn={handleSpawnSession}
       />
     </div>
   );

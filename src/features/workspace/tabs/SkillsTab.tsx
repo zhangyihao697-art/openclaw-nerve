@@ -111,9 +111,13 @@ function SkillRow({ skill }: { skill: Skill }) {
   );
 }
 
+interface SkillsTabProps {
+  agentId: string;
+}
+
 /** Workspace tab listing installed skills and flagging missing dependencies. */
-export function SkillsTab() {
-  const { skills, isLoading, error, refresh } = useSkills();
+export function SkillsTab({ agentId }: SkillsTabProps) {
+  const { skills, isLoading, error, refresh } = useSkills(agentId);
   const [showUnavailable, setShowUnavailable] = useState(false);
 
   const eligibleSkills = skills.filter(s => s.eligible);

@@ -8,6 +8,8 @@ import { InlineSelect } from '@/components/ui/InlineSelect';
 import { Button } from '@/components/ui/button';
 import { useWorkspaceFile } from '../hooks/useWorkspaceFile';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { getWorkspaceStorageKey } from '../workspaceScope';
+import { clearPersistedDraft, readPersistedDraft, writePersistedDraft } from '../persistedDrafts';
 
 const FILE_OPTIONS = [
   { key: 'soul', label: 'SOUL.md' },
@@ -18,19 +20,76 @@ const FILE_OPTIONS = [
   { key: 'heartbeat', label: 'HEARTBEAT.md' },
 ];
 
+const DEFAULT_CONFIG_KEY = 'soul';
+
+function getSelectedConfigStorageKey(agentId: string): string {
+  return getWorkspaceStorageKey('config:selected-file', agentId);
+}
+
+function getInitialSelectedKey(agentId: string): string {
+  try {
+    const stored = localStorage.getItem(getSelectedConfigStorageKey(agentId));
+    if (stored && FILE_OPTIONS.some(file => file.key === stored)) {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  return DEFAULT_CONFIG_KEY;
+}
+
+function getConfigDraftKind(fileKey: string): string {
+  return `config-editor:${fileKey}`;
+}
+
+interface ConfigTabProps {
+  agentId: string;
+}
+
 /** Workspace tab displaying an editable agent config file (YAML/TOML). */
-export function ConfigTab() {
-  const [selectedKey, setSelectedKey] = useState('soul');
-  const { content, isLoading, error, exists, load, save } = useWorkspaceFile();
-  const [editing, setEditing] = useState(false);
-  const [editContent, setEditContent] = useState('');
+export function ConfigTab({ agentId }: ConfigTabProps) {
+  const [selectedKey, setSelectedKey] = useState(() => getInitialSelectedKey(agentId));
+  const { content, isLoading, error, exists, load, save } = useWorkspaceFile(agentId);
+  const initialDraft = readPersistedDraft<string>(getConfigDraftKind(getInitialSelectedKey(agentId)), agentId);
+  const [editing, setEditing] = useState(() => initialDraft !== null);
+  const [editContent, setEditContent] = useState(() => initialDraft ?? '');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [pendingSwitchKey, setPendingSwitchKey] = useState<string | null>(null);
   const feedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const draftKind = getConfigDraftKind(selectedKey);
+  const clearDraft = useCallback((fileKey = selectedKey) => {
+    clearPersistedDraft(getConfigDraftKind(fileKey), agentId);
+  }, [agentId, selectedKey]);
+
   // Clean up feedback timer on unmount
   useEffect(() => () => clearTimeout(feedbackTimer.current), []);
+
+  useEffect(() => {
+    setSelectedKey(getInitialSelectedKey(agentId));
+  }, [agentId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(getSelectedConfigStorageKey(agentId), selectedKey);
+    } catch {
+      // ignore storage errors
+    }
+  }, [agentId, selectedKey]);
+
+  useEffect(() => {
+    const storedDraft = readPersistedDraft<string>(draftKind, agentId);
+    if (storedDraft !== null) {
+      setEditContent(storedDraft);
+      setEditing(true);
+      return;
+    }
+
+    setEditContent('');
+    setEditing(false);
+  }, [agentId, draftKind]);
 
   // Load file when key changes. Reset editing by keying on selectedKey.
   const loadFile = useCallback(() => {
@@ -41,6 +100,20 @@ export function ConfigTab() {
     loadFile();
   }, [loadFile]);
 
+  useEffect(() => {
+    if (!editing) {
+      clearDraft();
+      return;
+    }
+
+    if (editContent === (content ?? '')) {
+      clearDraft();
+      return;
+    }
+
+    writePersistedDraft(draftKind, agentId, editContent);
+  }, [agentId, clearDraft, content, draftKind, editContent, editing]);
+
   const showFeedback = useCallback((type: 'success' | 'error', message: string) => {
     clearTimeout(feedbackTimer.current);
     setFeedback({ type, message });
@@ -48,31 +121,37 @@ export function ConfigTab() {
   }, []);
 
   const handleEdit = useCallback(() => {
-    setEditContent(content || '');
+    const storedDraft = readPersistedDraft<string>(draftKind, agentId);
+    setEditContent(storedDraft ?? content ?? '');
     setEditing(true);
     // Focus textarea after render
     setTimeout(() => textareaRef.current?.focus(), 50);
-  }, [content]);
+  }, [agentId, content, draftKind]);
 
   const handleSave = useCallback(async () => {
-    const success = await save(selectedKey, editContent);
-    if (success) {
+    const result = await save(selectedKey, editContent);
+    if (result === 'saved') {
+      clearDraft();
       showFeedback('success', 'File saved');
       setEditing(false);
-    } else {
+      return;
+    }
+
+    if (result === 'error') {
       showFeedback('error', 'Failed to save');
     }
-  }, [selectedKey, editContent, save, showFeedback]);
+  }, [clearDraft, selectedKey, editContent, save, showFeedback]);
 
   const handleCancel = useCallback(() => {
+    clearDraft();
     setEditing(false);
-  }, []);
+  }, [clearDraft]);
 
   const handleCreate = useCallback(async () => {
     const label = FILE_OPTIONS.find(f => f.key === selectedKey)?.label || selectedKey;
     const template = `# ${label}\n\n`;
-    const success = await save(selectedKey, template);
-    if (success) {
+    const result = await save(selectedKey, template);
+    if (result === 'saved') {
       showFeedback('success', 'File created');
     }
   }, [selectedKey, save, showFeedback]);
@@ -94,15 +173,15 @@ export function ConfigTab() {
           <InlineSelect
             inline
             value={selectedKey}
-            onChange={(v) => {
+            onChange={(value) => {
               if (editing) {
-                setPendingSwitchKey(v);
+                setPendingSwitchKey(value);
                 return;
               }
-              setSelectedKey(v);
+              setSelectedKey(value);
               setEditing(false);
             }}
-            options={FILE_OPTIONS.map(f => ({ value: f.key, label: f.label }))}
+            options={FILE_OPTIONS.map(file => ({ value: file.key, label: file.label }))}
             ariaLabel="Select config file"
             triggerClassName="min-h-10 w-full justify-between rounded-2xl border-border/80 bg-background/65 px-3 py-2 text-sm font-sans text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
             menuClassName="rounded-2xl border-border/80 bg-card/98 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.28)]"
@@ -143,7 +222,7 @@ export function ConfigTab() {
               onClick={handleCreate}
               className="mt-2 text-purple hover:underline bg-transparent border-0 cursor-pointer text-[11px] focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0 rounded-sm"
             >
-              Create {FILE_OPTIONS.find(f => f.key === selectedKey)?.label}
+              Create {FILE_OPTIONS.find(file => file.key === selectedKey)?.label}
             </button>
           </div>
         )}
@@ -205,6 +284,7 @@ export function ConfigTab() {
         confirmLabel="Discard"
         cancelLabel="Cancel"
         onConfirm={() => {
+          clearDraft();
           if (pendingSwitchKey) {
             setSelectedKey(pendingSwitchKey);
             setEditing(false);

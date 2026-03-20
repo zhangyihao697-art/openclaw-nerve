@@ -23,11 +23,14 @@ vi.mock('@/contexts/SessionContext', () => ({
   useSessionContext: () => mockUseSessionContext(),
 }));
 
-function renderDialog(onSpawn = vi.fn(async () => {})) {
+function renderDialog(
+  onSpawn = vi.fn(async () => {}),
+  onOpenChange = vi.fn(),
+) {
   return render(
     <SpawnAgentDialog
       open
-      onOpenChange={vi.fn()}
+      onOpenChange={onOpenChange}
       onSpawn={onSpawn}
     />,
   );
@@ -86,5 +89,27 @@ describe('SpawnAgentDialog', () => {
 
   it('includes gpt-5.4 in the fallback model list when the catalog fetch fails', () => {
     expect(FALLBACK_MODELS.some((option) => option.value === 'openai-codex/gpt-5.4')).toBe(true);
+  });
+
+  it('keeps the dialog open when spawning is deferred by a guard', async () => {
+    const onSpawn = vi.fn(async () => false);
+    const onOpenChange = vi.fn();
+    renderDialog(onSpawn, onOpenChange);
+
+    fireEvent.click(screen.getByText('New agent'));
+    fireEvent.change(screen.getByPlaceholderText('e.g. reviewer'), { target: { value: 'research' } });
+    fireEvent.change(screen.getByPlaceholderText('What should this new agent start working on?'), { target: { value: 'test task' } });
+    fireEvent.click(screen.getByText('Create agent'));
+
+    await waitFor(() => {
+      expect(onSpawn).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'root',
+        agentName: 'research',
+        task: 'test task',
+      }));
+    });
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByText('Configure new agent')).toBeInTheDocument();
   });
 });

@@ -9,9 +9,11 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Plus, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import { MemoryItem, AddMemoryDialog, ConfirmDeleteDialog, MemoryEditor, useMemories } from '@/features/memory';
 import { MemorySkeletonGroup } from '@/components/skeletons';
+import { clearPersistedDraft, readPersistedDraft, writePersistedDraft } from '@/features/workspace/persistedDrafts';
 import type { Memory } from '@/types';
 
 interface MemoryListProps {
+  agentId: string;
   memories: Memory[];
   onRefresh: (signal?: AbortSignal) => void | Promise<void>;
   isLoading?: boolean;
@@ -20,10 +22,17 @@ interface MemoryListProps {
   compact?: boolean;
 }
 
+interface EditingMemoryState {
+  title: string;
+  date?: string;
+}
+
+const MEMORY_EDITOR_STATE_KIND = 'memory-editor:active';
+
 /** Searchable, editable list of agent memories with add/delete support. */
-export function MemoryList({ memories: initialMemories, onRefresh, isLoading: initialLoading, hideHeader, compact = false }: MemoryListProps) {
+export function MemoryList({ agentId, memories: initialMemories, onRefresh, isLoading: initialLoading, hideHeader, compact = false }: MemoryListProps) {
   // useMemories provides optimistic state that reflects pending operations
-  const { memories, addMemory, deleteMemory, error, clearError, isLoading } = useMemories(initialMemories);
+  const { memories, addMemory, deleteMemory, error, clearError, isLoading } = useMemories(initialMemories, agentId);
   
   // Dialog states
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -31,7 +40,9 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
   const [memoryToDelete, setMemoryToDelete] = useState<{ text: string; type: Memory['type']; date?: string } | null>(null);
   
   // Editor state
-  const [editingMemory, setEditingMemory] = useState<{ title: string; date?: string } | null>(null);
+  const [editingMemory, setEditingMemory] = useState<EditingMemoryState | null>(() => (
+    readPersistedDraft<EditingMemoryState>(MEMORY_EDITOR_STATE_KIND, agentId)
+  ));
   
   // Collapse state — sections are collapsed by default
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
@@ -84,6 +95,19 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
 
   // Cleanup feedback timer on unmount
   useEffect(() => () => clearTimeout(feedbackTimerRef.current), []);
+
+  useEffect(() => {
+    setEditingMemory(readPersistedDraft<EditingMemoryState>(MEMORY_EDITOR_STATE_KIND, agentId));
+  }, [agentId]);
+
+  useEffect(() => {
+    if (editingMemory) {
+      writePersistedDraft(MEMORY_EDITOR_STATE_KIND, agentId, editingMemory);
+      return;
+    }
+
+    clearPersistedDraft(MEMORY_EDITOR_STATE_KIND, agentId);
+  }, [agentId, editingMemory]);
 
   // Show feedback temporarily
   const showFeedback = useCallback((type: 'success' | 'error', message: string) => {
@@ -186,6 +210,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
   if (editingMemory) {
     return (
       <MemoryEditor
+        agentId={agentId}
         title={editingMemory.title}
         date={editingMemory.date}
         onSave={handleEditorSave}
@@ -309,6 +334,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
 
       {/* Confirm Delete Dialog */}
       <ConfirmDeleteDialog
+        agentId={agentId}
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         memoryText={memoryToDelete?.text || ''}
