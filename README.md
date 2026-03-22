@@ -139,7 +139,7 @@ Nerve sits in front of the gateway and gives you a richer operating surface in t
 
 ```text
 Browser ─── Nerve (:3080) ─── OpenClaw Gateway (:18789)
- │ │
+ │           │
  ├─ WS ──────┤ proxied to gateway
  ├─ SSE ─────┤ file watchers, real-time sync
  └─ REST ────┘ files, memories, TTS, models
