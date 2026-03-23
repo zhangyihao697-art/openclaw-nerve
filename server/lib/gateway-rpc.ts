@@ -37,9 +37,17 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 /** Derive the WebSocket URL from the HTTP gateway URL. */
 function getGatewayWsUrl(): string {
   const httpUrl = config.gatewayUrl;
-  if (httpUrl.startsWith('ws://') || httpUrl.startsWith('wss://')) return httpUrl;
-  // Convert http(s):// → ws(s)://
-  return httpUrl.replace(/^http/, 'ws');
+  let wsUrl: string;
+  if (httpUrl.startsWith('ws://') || httpUrl.startsWith('wss://')) {
+    wsUrl = httpUrl;
+  } else {
+    wsUrl = httpUrl.replace(/^http/, 'ws');
+  }
+  // Ensure the /ws path is present (gateway WebSocket endpoint)
+  if (!wsUrl.endsWith('/ws')) {
+    wsUrl = wsUrl.replace(/\/$/, '') + '/ws';
+  }
+  return wsUrl;
 }
 
 /**
