@@ -173,6 +173,19 @@ function gatewayFilesToTree(files: Awaited<ReturnType<typeof gatewayFilesList>>)
     }));
 }
 
+function normalizeWorkspaceLookupPath(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === '/workspace' || trimmed === '/workspace/') {
+    return '.';
+  }
+
+  if (trimmed.startsWith('/workspace/')) {
+    return trimmed.slice('/workspace/'.length);
+  }
+
+  return trimmed;
+}
+
 // ── GET /api/files/tree ──────────────────────────────────────────────
 
 app.get('/api/files/tree', async (c) => {
@@ -288,9 +301,10 @@ app.get('/api/files/resolve', async (c) => {
     return c.json({ ok: false, error: 'Not supported for remote workspaces', code: 'REMOTE_WORKSPACE' }, 501);
   }
 
+  const normalizedTargetPath = normalizeWorkspaceLookupPath(targetPath);
   const resolved = await resolveWorkspacePathForRoot(
     workspace.workspaceRoot,
-    targetPath,
+    normalizedTargetPath,
     { allowNonExistent: true },
   );
   if (!resolved) {

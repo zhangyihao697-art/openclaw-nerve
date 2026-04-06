@@ -5,6 +5,7 @@ import { hljs } from '@/lib/highlight';
 import { sanitizeHtml } from '@/lib/sanitize';
 import { escapeRegex } from '@/lib/constants';
 import { CodeBlockActions } from './CodeBlockActions';
+import { renderInlinePathReferences } from './inlineReferences';
 
 interface MarkdownRendererProps {
   content: string;
@@ -12,38 +13,56 @@ interface MarkdownRendererProps {
   searchQuery?: string;
   suppressImages?: boolean;
   onOpenWorkspacePath?: (path: string) => void | Promise<void>;
+  pathLinkPrefixes?: string[];
 }
 
 function highlightText(text: string, query: string): React.ReactNode {
   if (!query.trim()) return text;
-  
+
   const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
   const parts = text.split(regex);
-  
-  // split() with a capture group alternates: non-match, match, non-match, ...
-  // Odd indices are always the captured matches — no regex.test() needed
-  return parts.map((part, i) => 
+
+  return parts.map((part, i) =>
     i % 2 === 1 ? (
       <mark key={i} className="search-highlight">{part}</mark>
-    ) : part
+    ) : part,
   );
 }
 
-// Process React children to apply search highlighting to text nodes
-function processChildren(children: React.ReactNode, searchQuery?: string): React.ReactNode {
-  if (!searchQuery?.trim()) return children;
-  
+function processChildren(
+  children: React.ReactNode,
+  options: {
+    searchQuery?: string;
+    pathLinkPrefixes?: string[];
+    onOpenWorkspacePath?: (path: string) => void | Promise<void>;
+  } = {},
+): React.ReactNode {
+  const { searchQuery, pathLinkPrefixes, onOpenWorkspacePath } = options;
+  const renderPlainText = (text: string) => highlightText(text, searchQuery ?? '');
+
   return React.Children.map(children, (child) => {
     if (typeof child === 'string') {
-      return highlightText(child, searchQuery);
+      return renderInlinePathReferences(child, {
+        prefixes: pathLinkPrefixes,
+        onOpenPath: onOpenWorkspacePath,
+        renderPlainText,
+      });
     }
-    if (React.isValidElement<{ children?: React.ReactNode }>(child)) {
+
+    if (React.isValidElement<{ children?: React.ReactNode; node?: { tagName?: string } }>(child)) {
+      const tagName = typeof child.type === 'string' ? child.type : '';
+      const markdownTagName = child.props.node?.tagName ?? '';
+      if (tagName === 'code' || tagName === 'pre' || tagName === 'a' || markdownTagName === 'code' || markdownTagName === 'pre' || markdownTagName === 'a') {
+        return child;
+      }
+
       if (child.props.children) {
         return React.cloneElement(child, {
-          children: processChildren(child.props.children, searchQuery),
+          children: processChildren(child.props.children, options),
         });
       }
     }
+
     return child;
   });
 }
@@ -65,8 +84,6 @@ function decodeWorkspacePathLink(href: string): string {
   }
 }
 
-// ─── Code Block with actions ─────────────────────────────────────────────────
-
 function CodeBlock({ code, language, highlightedHtml }: {
   code: string;
   language: string;
@@ -86,25 +103,21 @@ function CodeBlock({ code, language, highlightedHtml }: {
   );
 }
 
-// ─── Main renderer ───────────────────────────────────────────────────────────
+export function MarkdownRenderer({ content, className = '', searchQuery, suppressImages, onOpenWorkspacePath, pathLinkPrefixes }: MarkdownRendererProps) {
+  const childOptions = useMemo(() => ({ searchQuery, pathLinkPrefixes, onOpenWorkspacePath }), [searchQuery, pathLinkPrefixes, onOpenWorkspacePath]);
 
-/** Render markdown content with syntax highlighting, search-term highlighting, and inline charts. */
-export function MarkdownRenderer({ content, className = '', searchQuery, suppressImages, onOpenWorkspacePath }: MarkdownRendererProps) {
-  // Memoize components object to avoid unnecessary ReactMarkdown re-renders.
-  // Only recreated when searchQuery or suppressImages changes.
   const components = useMemo(() => ({
-    // Highlight search terms in text nodes
     p: ({ children }: { children?: React.ReactNode }) => (
-      <p>{processChildren(children, searchQuery)}</p>
+      <p>{processChildren(children, childOptions)}</p>
     ),
     li: ({ children }: { children?: React.ReactNode }) => (
-      <li>{processChildren(children, searchQuery)}</li>
+      <li>{processChildren(children, childOptions)}</li>
     ),
     td: ({ children }: { children?: React.ReactNode }) => (
-      <td>{processChildren(children, searchQuery)}</td>
+      <td>{processChildren(children, childOptions)}</td>
     ),
     th: ({ children }: { children?: React.ReactNode }) => (
-      <th>{processChildren(children, searchQuery)}</th>
+      <th>{processChildren(children, childOptions)}</th>
     ),
     code: ({ className: codeClassName, children, ...props }: { className?: string; children?: React.ReactNode }) => {
       const match = /language-(\w+)/.exec(codeClassName || '');
@@ -126,9 +139,7 @@ export function MarkdownRenderer({ content, className = '', searchQuery, suppres
             />
           );
         } catch {
-          return (
-            <CodeBlock code={codeString} language={lang} />
-          );
+          return <CodeBlock code={codeString} language={lang} />;
         }
       }
 
@@ -155,7 +166,9 @@ export function MarkdownRenderer({ content, className = '', searchQuery, suppres
             className="markdown-link"
             onClick={(event) => {
               event.preventDefault();
-              void onOpenWorkspacePath(decodeWorkspacePathLink(href));
+              Promise.resolve(onOpenWorkspacePath(decodeWorkspacePathLink(href))).catch((error) => {
+                console.error('Failed to open workspace path link:', error);
+              });
             }}
           >
             {children}
@@ -169,15 +182,12 @@ export function MarkdownRenderer({ content, className = '', searchQuery, suppres
         </a>
       );
     },
-    ...(suppressImages ? { img: () => null } : {}), // When set, images handled by extractedImages + ImageLightbox
-  }), [onOpenWorkspacePath, searchQuery, suppressImages]);
+    ...(suppressImages ? { img: () => null } : {}),
+  }), [childOptions, onOpenWorkspacePath, suppressImages]);
 
   return (
     <div className={`markdown-content ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={components}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>
     </div>

@@ -38,6 +38,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { createCommands } from '@/features/command-palette/commands';
 import { PanelErrorBoundary } from '@/components/PanelErrorBoundary';
 import { SpawnAgentDialog } from '@/features/sessions/SpawnAgentDialog';
+import { DEFAULT_CHAT_PATH_LINKS_CONFIG, parseChatPathLinksConfig } from '@/features/chat/chatPathLinks';
 import { FileTreePanel, TabbedContentArea, useOpenFiles, type FileTreeChangeEvent } from '@/features/file-browser';
 import { isImageFile } from '@/features/file-browser/utils/fileTypes';
 import { buildAgentRootSessionKey, getSessionDisplayLabel } from '@/features/sessions/sessionKeys';
@@ -334,6 +335,36 @@ export default function App({ onLogout }: AppProps) {
     setPendingTaskId(taskId);
     setViewMode('kanban');
   }, [setViewMode]);
+  const [chatPathLinkPrefixes, setChatPathLinkPrefixes] = useState<string[]>(
+    DEFAULT_CHAT_PATH_LINKS_CONFIG.prefixes,
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams({ agentId: workspaceAgentId });
+    const controller = new AbortController();
+
+    void fetch(`/api/workspace/chatPathLinks?${params.toString()}`, { signal: controller.signal })
+      .then(async (res) => {
+        if (res.status === 404) {
+          setChatPathLinkPrefixes(DEFAULT_CHAT_PATH_LINKS_CONFIG.prefixes);
+          return;
+        }
+        const data = await res.json() as { ok: boolean; content?: string };
+        if (!data.ok || !data.content) {
+          setChatPathLinkPrefixes(DEFAULT_CHAT_PATH_LINKS_CONFIG.prefixes);
+          return;
+        }
+        const parsed = parseChatPathLinksConfig(data.content);
+        setChatPathLinkPrefixes(parsed.prefixes);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setChatPathLinkPrefixes(DEFAULT_CHAT_PATH_LINKS_CONFIG.prefixes);
+        }
+      });
+
+    return () => controller.abort();
+  }, [workspaceAgentId]);
 
   useEffect(() => {
     if (kanbanVisible || viewMode !== 'kanban') return;
@@ -352,14 +383,12 @@ export default function App({ onLogout }: AppProps) {
 
     if (!res.ok || !data?.ok || !data.path || !data.type) return;
 
-    if (data.type === 'file' && (!data.binary || isImageFile(data.path))) {
-      setRevealRequest(null);
-      await openFile(data.path);
-      return;
-    }
-
     setFileBrowserCollapsed(false);
     setRevealRequest({ id: Date.now(), path: data.path, kind: data.type, agentId: workspaceAgentId });
+
+    if (data.type === 'file' && (!data.binary || isImageFile(data.path))) {
+      await openFile(data.path);
+    }
   }, [openFile, setFileBrowserCollapsed, workspaceAgentId]);
 
   const toggleMobileTopBar = useCallback(() => {
@@ -670,6 +699,7 @@ export default function App({ onLogout }: AppProps) {
             onToggleMobileTopBar={isCompactLayout ? toggleMobileTopBar : undefined}
             isMobileTopBarHidden={isMobileTopBarHidden}
             onOpenWorkspacePath={openWorkspacePath}
+            pathLinkPrefixes={chatPathLinkPrefixes}
           />
         </PanelErrorBoundary>
       }
