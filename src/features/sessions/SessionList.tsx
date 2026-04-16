@@ -3,7 +3,7 @@ import type { Session } from '@/types';
 import { getSessionKey } from '@/types';
 import type { SpawnSessionOpts } from '@/contexts/SessionContext';
 import { SessionSkeletonGroup } from '@/components/skeletons';
-import { buildAgentSidebarTree, buildSessionTree, flattenTree, getSessionType } from './sessionTree';
+import { buildAgentSidebarTree, buildSessionTree, getSessionType } from './sessionTree';
 import { getSessionDisplayLabel, isTopLevelAgentSessionKey } from './sessionKeys';
 import { SessionNode } from './SessionNode';
 import type { GranularAgentState } from '@/types';
@@ -59,7 +59,7 @@ export function SessionList({ sessions, currentSession, busyState, agentStatus, 
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const [expandedState, setExpandedState] = useState<Record<string, boolean>>({});
+  const [, setExpandedState] = useState<Record<string, boolean>>({});
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget || !onDelete) return;
@@ -132,9 +132,12 @@ export function SessionList({ sessions, currentSession, busyState, agentStatus, 
     });
   }, [sessions]);
 
-  // Build tree and flatten for rendering
+  // Build AGENTS view from configured/root agents only. Descendant sessions stay out of this panel.
   const tree = useMemo(() => buildAgentSidebarTree(sessions), [sessions]);
-  const flatNodes = useMemo(() => flattenTree(tree, expandedState), [tree, expandedState]);
+  const flatNodes = useMemo(
+    () => tree.map((node) => ({ ...node, children: [], isExpanded: false })),
+    [tree],
+  );
 
   const handleSetDeleteTarget = useCallback((key: string, label: string) => {
     const targetNode = findNodeByKey(tree, key);
@@ -195,7 +198,7 @@ export function SessionList({ sessions, currentSession, busyState, agentStatus, 
           const currentTokens = node.session.totalTokens || 0;
           const prevTokens = prevTokensRef.current[sessionKey] || 0;
           const displayTokens = Math.max(currentTokens, prevTokens);
-          const isExpanded = expandedState[sessionKey] ?? !isCron;
+          const isExpanded = false;
 
           return (
             <SessionNode

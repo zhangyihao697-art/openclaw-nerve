@@ -43,6 +43,14 @@ export interface SpawnSessionOpts {
   parentSessionKey?: string;
 }
 
+interface ConfiguredAgentSidebarEntry {
+  configuredId: string;
+  agentId: string;
+  sessionKey: string;
+  label: string;
+  configuredName: string;
+}
+
 interface SessionContextValue {
   sessions: Session[];
   sessionsLoading: boolean;
@@ -151,6 +159,46 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return merged;
   }, []);
 
+  const fetchConfiguredAgentPlaceholders = useCallback(async (): Promise<ConfiguredAgentSidebarEntry[]> => {
+    try {
+      const res = await fetch('/api/configured-agents');
+      if (!res.ok) return [];
+      const data = await res.json() as { ok?: boolean; agents?: ConfiguredAgentSidebarEntry[] };
+      return Array.isArray(data.agents) ? data.agents : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const mergeConfiguredAgentsIntoSessions = useCallback((sessions: Session[], configuredAgents: ConfiguredAgentSidebarEntry[]): Session[] => {
+    if (configuredAgents.length === 0) return sessions;
+
+    const configuredByKey = new Map(configuredAgents.map((agent) => [agent.sessionKey, agent]));
+    const merged = sessions.map((session) => {
+      const key = getSessionKey(session);
+      const configured = configuredByKey.get(key);
+      if (!configured) return session;
+      return {
+        ...session,
+        label: configured.configuredName,
+        displayName: configured.configuredName,
+      };
+    });
+
+    const seen = new Set(merged.map(getSessionKey));
+    for (const configured of configuredAgents) {
+      if (seen.has(configured.sessionKey)) continue;
+      merged.push({
+        sessionKey: configured.sessionKey,
+        label: configured.configuredName,
+        displayName: configured.configuredName,
+        state: 'idle',
+      });
+    }
+
+    return merged;
+  }, []);
+
   // Fetch agent name from server-info on mount
   useEffect(() => {
     const controller = new AbortController();
@@ -224,16 +272,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const listAuthoritativeSessions = useCallback(async () => {
     if (connectionState !== 'connected') return sessionsRef.current;
     try {
-      const [res, hiddenCronSessions] = await Promise.all([
+      const [res, hiddenCronSessions, configuredAgents] = await Promise.all([
         rpc('sessions.list', { limit: FULL_SESSIONS_LIMIT }) as Promise<SessionsListResponse>,
         fetchHiddenCronSessions(24 * 60, FULL_SESSIONS_LIMIT),
+        fetchConfiguredAgentPlaceholders(),
       ]);
-      return mergeSessionLists(res?.sessions ?? [], hiddenCronSessions);
+      const sessionsWithHidden = mergeSessionLists(res?.sessions ?? [], hiddenCronSessions);
+      return mergeConfiguredAgentsIntoSessions(sessionsWithHidden, configuredAgents);
     } catch (err) {
       console.debug('[SessionContext] Failed to fetch authoritative session list:', err);
       return sessionsRef.current;
     }
-  }, [connectionState, fetchHiddenCronSessions, mergeSessionLists, rpc]);
+  }, [connectionState, fetchConfiguredAgentPlaceholders, fetchHiddenCronSessions, mergeConfiguredAgentsIntoSessions, mergeSessionLists, rpc]);
 
   const setGranularStatus = useCallback((sessionKey: string, state: GranularAgentState) => {
     if (!sessionKey) return;

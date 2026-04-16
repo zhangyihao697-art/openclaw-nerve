@@ -68,6 +68,38 @@ describe('agent-workspace', () => {
     expect(workspace.memoryDir).toBe(path.join(workspace.workspaceRoot, 'memory'));
   });
 
+  it('resolves configured workspaces using OpenClaw agent ids and normalization', async () => {
+    const openclawDir = path.join(homeDir, '.openclaw');
+    const configuredWorkspace = path.join(openclawDir, 'workspace-Front_End');
+    await fs.mkdir(configuredWorkspace, { recursive: true });
+    await fs.writeFile(
+      path.join(openclawDir, 'openclaw.json'),
+      JSON.stringify({
+        agents: {
+          agents: [
+            { id: 'Front_End', workspace: configuredWorkspace },
+          ],
+        },
+      }),
+    );
+
+    const { resolveAgentWorkspace } = await loadModule();
+
+    expect(resolveAgentWorkspace('Front_End')).toEqual({
+      agentId: 'front-end',
+      workspaceRoot: configuredWorkspace,
+      memoryPath: path.join(configuredWorkspace, 'MEMORY.md'),
+      memoryDir: path.join(configuredWorkspace, 'memory'),
+    });
+
+    expect(resolveAgentWorkspace('front-end')).toEqual({
+      agentId: 'front-end',
+      workspaceRoot: configuredWorkspace,
+      memoryPath: path.join(configuredWorkspace, 'MEMORY.md'),
+      memoryDir: path.join(configuredWorkspace, 'memory'),
+    });
+  });
+
   it('rejects invalid agent ids', async () => {
     const { resolveAgentWorkspace } = await loadModule();
 

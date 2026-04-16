@@ -126,12 +126,12 @@ export function getTopLevelAgentSessions(sessions: Session[]): Session[] {
 export function getSessionDisplayLabel(session: Session, agentName = 'Agent'): string {
   const sessionKey = getSessionKey(session);
 
-  if (sessionKey === 'agent:main:main') {
-    return `${agentName} (main)`;
-  }
-
   if (session.label?.trim()) return session.label.trim();
   if (session.displayName?.trim()) return session.displayName.trim();
+
+  if (sessionKey === 'agent:main:main') {
+    return agentName;
+  }
 
   if (isTopLevelAgentSessionKey(sessionKey)) {
     const rootId = getRootAgentId(sessionKey);
