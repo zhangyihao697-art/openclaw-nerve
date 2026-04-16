@@ -20,6 +20,18 @@ describe('filterMessage', () => {
     expect(filterMessage({ role: 'assistant', content: 'Hi there' })).toBe(true);
   });
 
+  it('hides exact internal assistant control replies', () => {
+    expect(filterMessage({ role: 'assistant', content: 'NO_REPLY' })).toBe(false);
+    expect(filterMessage({ role: 'assistant', content: '  HEARTBEAT_OK\n' })).toBe(false);
+  });
+
+  it('hides pure internal wake bundles', () => {
+    expect(filterMessage({
+      role: 'user',
+      content: 'System (untrusted): [2026-04-16 18:27:55 GMT+3] Exec completed (wild-orb, code 0) :: done\n\nAn async command you ran earlier has completed. The result is shown in the system messages above. Handle the result internally. Do not relay it to the user unless explicitly requested.\nCurrent time: Thursday, April 16th, 2026 - 6:29 PM (Europe/Istanbul) / 2026-04-16 15:29 UTC',
+    })).toBe(false);
+  });
+
   it('passes through sub-agent completions (tagged)', () => {
     expect(filterMessage({
       role: 'user',
@@ -140,7 +152,7 @@ describe('splitToolCallMessage', () => {
     expect(result.some(m => m.isThinking)).toBe(true);
   });
 
-  it('handles user messages with system events', () => {
+  it('handles user messages with timestamped system events', () => {
     const msg: ChatMessage = {
       role: 'user',
       content: 'System: [2026-02-17 20:30:23 GMT+1] Agent started\nHello!',
@@ -148,6 +160,52 @@ describe('splitToolCallMessage', () => {
     const result = splitToolCallMessage(msg);
     expect(result.some(m => m.role === 'event')).toBe(true);
     expect(result.some(m => m.role === 'user')).toBe(true);
+  });
+
+  it('handles untrusted system-event prefixes from newer OpenClaw builds', () => {
+    const msg: ChatMessage = {
+      role: 'user',
+      content: 'System (untrusted): [2026-04-16 18:11:51 GMT+3] Exec completed (gentle-l, code 0) :: done',
+    };
+    const result = splitToolCallMessage(msg);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('event');
+    expect(result[0].rawText).toContain('System (untrusted): [2026-04-16 18:11:51 GMT+3] Exec completed');
+  });
+
+  it('strips async exec follow-up instructions from injected system-event bundles', () => {
+    const msg: ChatMessage = {
+      role: 'user',
+      content: 'System (untrusted): [2026-04-16 18:11:51 GMT+3] Exec completed (gentle-l, code 0) :: done\n\nAn async command you ran earlier has completed. The result is shown in the system messages above. Handle the result internally. Do not relay it to the user unless explicitly requested.\nCurrent time: Thursday, April 16th, 2026 - 6:12 PM (Europe/Istanbul) / 2026-04-16 15:12 UTC',
+    };
+    const result = splitToolCallMessage(msg);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('event');
+    expect(result[0].rawText).not.toContain('An async command you ran earlier has completed.');
+    expect(result[0].rawText).not.toContain('Current time:');
+  });
+
+  it('strips standalone follow-up lines like "Handle the result internally."', () => {
+    const msg: ChatMessage = {
+      role: 'user',
+      content: 'System (untrusted): [2026-04-16 18:11:51 GMT+3] Exec completed (gentle-l, code 0) :: done\nHandle the result internally.\nDo not relay it to the user unless explicitly requested.',
+    };
+    const result = splitToolCallMessage(msg);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('event');
+    expect(result[0].rawText).not.toContain('Handle the result internally.');
+  });
+
+  it('preserves later user text and paragraph breaks after a system event bundle', () => {
+    const msg: ChatMessage = {
+      role: 'user',
+      content: 'System (untrusted): [2026-04-16 18:11:51 GMT+3] Exec completed (gentle-l, code 0) :: done\n\nAn async command you ran earlier has completed.\nCurrent time: Thursday, April 16th, 2026 - 6:12 PM (Europe/Istanbul) / 2026-04-16 15:12 UTC\nHello there\n\nSecond paragraph',
+    };
+    const result = splitToolCallMessage(msg);
+    expect(result).toHaveLength(2);
+    expect(result[0].role).toBe('event');
+    expect(result[1].role).toBe('user');
+    expect(result[1].rawText).toBe('Hello there\n\nSecond paragraph');
   });
 });
 
@@ -252,6 +310,21 @@ describe('processChatMessages', () => {
     const sysMsg = result.find(m => m.rawText.includes('background task'));
     expect(sysMsg).toBeDefined();
     expect(sysMsg!.isSystemNotification).toBe(true);
+  });
+
+  it('drops internal wake bundles and silent control replies from rendered history', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'assistant', content: 'Already did it ⚡' },
+      {
+        role: 'user',
+        content: 'System (untrusted): [2026-04-16 18:27:55 GMT+3] Exec completed (wild-orb, code 0) :: done\nSystem (untrusted): [2026-04-16 18:28:54 GMT+3] Exec completed (rapid-sa, code 0) :: https://github.com/daggerhashimoto/openclaw-nerve/pull/278\n\nAn async command you ran earlier has completed. The result is shown in the system messages above. Handle the result internally. Do not relay it to the user unless explicitly requested.\nCurrent time: Thursday, April 16th, 2026 - 6:29 PM (Europe/Istanbul) / 2026-04-16 15:29 UTC',
+      },
+      { role: 'assistant', content: 'NO_REPLY' },
+    ];
+    const result = processChatMessages(msgs);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('assistant');
+    expect(result[0].rawText).toBe('Already did it ⚡');
   });
 
   it('handles empty input', () => {
