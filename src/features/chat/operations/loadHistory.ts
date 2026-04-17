@@ -123,6 +123,32 @@ const SYSTEM_NOTIFICATION_PATTERNS = [
   /^\[System Message\].*?(?:subagent|task|cron).*?(?:completed|finished|failed)/is,
 ];
 
+/** Matches timestamped gateway-injected system lines, including untrusted variants. */
+const SYSTEM_EVENT_LINE = /^System(?: \(untrusted\))?: \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? [^\]]*\]/;
+
+/** Internal follow-up lines appended after async exec/cron system events. */
+const SYSTEM_EVENT_FOLLOWUP_LINE = /^(?:An async command you ran earlier has completed\.|A scheduled reminder has been triggered\.|A scheduled cron event was triggered(?:, but no event content was found)?\.|Handle this reminder internally\.|Handle this internally\.|Handle the result internally\.?|Do not relay it to the user unless explicitly requested\.|Please relay the command output to the user in a helpful way\.|Please relay this reminder to the user in a helpful and friendly way\.|Current time:)/i;
+
+/** Internal assistant control replies that should never render as chat bubbles. */
+const INTERNAL_CONTROL_REPLY_RE = /^(?:NO_REPLY|HEARTBEAT_OK)$/;
+
+function isInternalWakeBundle(text: string): boolean {
+  let sawSystemEvent = false;
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (SYSTEM_EVENT_LINE.test(line)) {
+      sawSystemEvent = true;
+      continue;
+    }
+    if (SYSTEM_EVENT_FOLLOWUP_LINE.test(line)) continue;
+    return false;
+  }
+
+  return sawSystemEvent;
+}
+
 /** Check if text matches a system notification and extract label. */
 export function detectSystemNotification(text: string): { match: boolean; label: string } {
   // Extract task/job name from quotes if present
@@ -155,6 +181,15 @@ export function detectSystemNotification(text: string): { match: boolean; label:
 /** Determine whether a history message should be shown in the chat UI. */
 export function filterMessage(m: ChatMessage): boolean {
   const text = extractText(m);
+  const trimmedText = text.trim();
+
+  if (m.role === 'assistant' && INTERNAL_CONTROL_REPLY_RE.test(trimmedText)) {
+    return false;
+  }
+
+  if (m.role === 'user' && isInternalWakeBundle(trimmedText)) {
+    return false;
+  }
 
   // System notifications are now rendered as collapsible strips, not hidden.
   // They pass through the filter and get tagged during message processing.
@@ -162,7 +197,6 @@ export function filterMessage(m: ChatMessage): boolean {
   // Hide redundant tool results for Edit/Write operations
   // (diff view already shows the changes — only hide exact success patterns)
   if (m.role === 'tool' || m.role === 'toolResult') {
-    const trimmedText = text.trim();
     if (/^Successfully replaced text in .+\.$/.test(trimmedText)) return false;
     if (/^Successfully wrote \d+ bytes to .+\.$/.test(trimmedText)) return false;
   }
@@ -182,9 +216,6 @@ export function filterMessage(m: ChatMessage): boolean {
  * returned as a single-element array.
  */
 // ─── System event splitting ────────────────────────────────────────────────────
-
-/** Matches "System: [2026-02-17 20:30:23 GMT+1] ..." lines injected by the gateway. */
-const SYSTEM_EVENT_LINE = /^System: \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? [^\]]*\]/;
 
 /** Strip the TTS system prompt hint appended to voice messages by sendMessage. */
 const TTS_SYSTEM_HINT_RE = /\s*\[system: User sent a voice message\.[\s\S]*$/;
@@ -233,6 +264,7 @@ function extractUploadAttachments(rawText: string): {
 function splitSystemEvents(text: string): Array<{ role: 'event' | 'user'; text: string }> {
   const segments: Array<{ role: 'event' | 'user'; text: string }> = [];
   let userBuffer: string[] = [];
+  let sawSystemEvent = false;
 
   const flushUser = () => {
     const joined = userBuffer.join('\n').trim();
@@ -244,7 +276,15 @@ function splitSystemEvents(text: string): Array<{ role: 'event' | 'user'; text: 
     if (SYSTEM_EVENT_LINE.test(line)) {
       flushUser();
       segments.push({ role: 'event', text: stripAnsi(line) });
+      sawSystemEvent = true;
     } else {
+      const trimmed = line.trim();
+      if (sawSystemEvent) {
+        if (!trimmed || SYSTEM_EVENT_FOLLOWUP_LINE.test(trimmed)) {
+          continue;
+        }
+        sawSystemEvent = false;
+      }
       userBuffer.push(line);
     }
   }

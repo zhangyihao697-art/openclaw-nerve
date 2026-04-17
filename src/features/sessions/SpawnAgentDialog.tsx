@@ -29,6 +29,7 @@ const AFTER_RUN_OPTIONS: InlineSelectOption[] = [
   { value: 'keep', label: 'Keep' },
   { value: 'delete', label: 'Delete' },
 ];
+const INHERITED_MODEL_VALUE = 'primary';
 
 type ModelEntry = { id: string; alias?: string };
 type ModelCatalogResponse = {
@@ -101,10 +102,14 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
   }, [open]);
 
   const modelOptions = useMemo<InlineSelectOption[]>(() => {
-    return fetchedModels.map((entry) => ({
-      value: entry.id,
-      label: entry.alias || deriveAlias(entry.id),
-    }));
+    if (fetchedModels.length === 0) return [];
+    return [
+      { value: INHERITED_MODEL_VALUE, label: INHERITED_MODEL_VALUE },
+      ...fetchedModels.map((entry) => ({
+        value: entry.id,
+        label: entry.alias || deriveAlias(entry.id),
+      })),
+    ];
   }, [fetchedModels]);
 
   const visibleModelOptions = useMemo<InlineSelectOption[]>(() => {
@@ -112,7 +117,10 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
     return [{ value: '', label: 'No configured models' }];
   }, [modelOptions]);
 
-  const defaultModelId = useMemo(() => fetchedModels[0]?.id || '', [fetchedModels]);
+  const defaultModelId = useMemo(
+    () => (fetchedModels.length > 0 ? INHERITED_MODEL_VALUE : ''),
+    [fetchedModels],
+  );
 
   useEffect(() => {
     if (fetchedModels.length === 0) {
@@ -120,7 +128,8 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
       return;
     }
 
-    if (!model || !fetchedModels.some((entry) => entry.id === model)) {
+    const hasValidSelection = model === INHERITED_MODEL_VALUE || fetchedModels.some((entry) => entry.id === model);
+    if (!hasValidSelection) {
       setModel(defaultModelId);
     }
   }, [defaultModelId, fetchedModels, model]);
@@ -160,13 +169,14 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
 
     setSpawning(true);
     setSpawnError('');
+    const spawnModel = model === INHERITED_MODEL_VALUE ? undefined : model;
     try {
       const spawnResult = mode === 'root'
         ? await onSpawn({
             kind: 'root',
             agentName: agentNameInput.trim(),
             task: task.trim(),
-            model,
+            model: spawnModel,
             thinking,
           })
         : await onSpawn({
@@ -174,7 +184,7 @@ export function SpawnAgentDialog({ open, onOpenChange, onSpawn }: SpawnAgentDial
             parentSessionKey: parentRootKey,
             task: task.trim(),
             label: label.trim() || undefined,
-            model,
+            model: spawnModel,
             thinking,
             cleanup,
           });
