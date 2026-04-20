@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, EllipsisVertical, Loader2 } from 'lucide-react';
 import { FileIcon, FolderIcon } from './utils/fileIcons';
 import { isImageFile, isPdfFile } from './utils/fileTypes';
 import type { TreeEntry } from './types';
@@ -30,6 +30,8 @@ interface FileTreeNodeProps {
   onRenameChange: (value: string) => void;
   onRenameCommit: () => void;
   onRenameCancel: () => void;
+  compact?: boolean;
+  onOpenActions?: (entry: TreeEntry, anchorRect: DOMRect) => void;
 }
 
 export function FileTreeNode({
@@ -55,6 +57,8 @@ export function FileTreeNode({
   onRenameChange,
   onRenameCommit,
   onRenameCancel,
+  compact,
+  onOpenActions,
 }: FileTreeNodeProps) {
   const longPressTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -69,6 +73,7 @@ export function FileTreeNode({
   const canDrag = entry.path !== '.trash' && !isRenaming;
   const isDropTarget = isDir && dropTargetPath === entry.path;
   const isDragSource = dragSourcePath === entry.path;
+  const showCompactActions = compact && onOpenActions && !isRenaming;
 
   const clearLongPress = () => {
     if (longPressTimerRef.current !== null) {
@@ -154,6 +159,28 @@ export function FileTreeNode({
     }
   };
 
+  const handleActionsClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onOpenActions?.(entry, event.currentTarget.getBoundingClientRect());
+  };
+
+  const handleActionsPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleActionsMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleActionsKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  const handleActionsContextMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   return (
     <div role="treeitem" aria-expanded={isDir ? isExpanded : undefined} aria-selected={isSelected}>
       <div
@@ -228,7 +255,23 @@ export function FileTreeNode({
             className="flex-1 min-w-0 bg-background border border-border/60 px-1 py-0 text-[0.8rem] leading-5 text-foreground focus:outline-none focus:border-primary"
           />
         ) : (
-          <span className="truncate">{entry.name}</span>
+          <span className="flex-1 min-w-0 truncate">{entry.name}</span>
+        )}
+        {showCompactActions && (
+          <button
+            type="button"
+            className="ml-auto flex-shrink-0 p-0 text-muted-foreground hover:text-foreground"
+            aria-label={`Open actions for ${entry.name}`}
+            title={`Open actions for ${entry.name}`}
+            draggable={false}
+            onClick={handleActionsClick}
+            onPointerDown={handleActionsPointerDown}
+            onMouseDown={handleActionsMouseDown}
+            onKeyDown={handleActionsKeyDown}
+            onContextMenu={handleActionsContextMenu}
+          >
+            <EllipsisVertical size={16} />
+          </button>
         )}
       </div>
 
@@ -260,6 +303,8 @@ export function FileTreeNode({
               onRenameChange={onRenameChange}
               onRenameCommit={onRenameCommit}
               onRenameCancel={onRenameCancel}
+              compact={compact}
+              onOpenActions={onOpenActions}
             />
           ))}
         </div>

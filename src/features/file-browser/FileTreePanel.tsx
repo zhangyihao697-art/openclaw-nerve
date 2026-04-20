@@ -500,6 +500,29 @@ export function FileTreePanel({
     });
   }, [selectFile, workspaceAgentId]);
 
+  const openCompactActionsMenu = useCallback((entry: TreeEntry, anchorRect: DOMRect) => {
+    setContextMenu((currentContextMenu) => {
+      if (
+        currentContextMenu
+        && currentContextMenu.agentId === workspaceAgentId
+        && currentContextMenu.source === 'mouse'
+        && currentContextMenu.entry.path === entry.path
+      ) {
+        return null;
+      }
+
+      contextMenuSessionIdRef.current += 1;
+      return {
+        agentId: workspaceAgentId,
+        sessionId: contextMenuSessionIdRef.current,
+        x: anchorRect.right - MENU_CURSOR_OFFSET,
+        y: anchorRect.bottom + MENU_VIEWPORT_PADDING,
+        entry,
+        source: 'mouse',
+      };
+    });
+  }, [workspaceAgentId]);
+
   const startRename = useCallback((entry: TreeEntry) => {
     if (entry.path === '.trash') {
       showToastForAgent(workspaceAgentId, { type: 'error', message: 'Cannot rename .trash root' }, 3500);
@@ -819,7 +842,7 @@ export function FileTreePanel({
                 loadingPaths={loadingPaths}
                 onToggleDir={toggleDirectory}
                 onOpenFile={onOpenFile}
-                onTouchLongPress={openTouchContextMenu}
+                onTouchLongPress={isCompactLayout ? undefined : openTouchContextMenu}
                 onSelect={selectFile}
                 onContextMenu={handleContextMenu}
                 dragSourcePath={visibleDragSource?.path || null}
@@ -834,6 +857,8 @@ export function FileTreePanel({
                 onRenameChange={handleRenameChange}
                 onRenameCommit={() => { void commitRename(); }}
                 onRenameCancel={cancelRename}
+                compact={isCompactLayout}
+                onOpenActions={openCompactActionsMenu}
               />
             ))
           )}

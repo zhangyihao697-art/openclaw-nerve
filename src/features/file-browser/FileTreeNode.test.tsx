@@ -1,4 +1,3 @@
-import type React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { FileTreeNode } from './FileTreeNode';
@@ -21,7 +20,22 @@ const entry: TreeEntry = {
   children: null,
 };
 
-function renderNode(overrides: Partial<React.ComponentProps<typeof FileTreeNode>> = {}) {
+const directoryEntry: TreeEntry = {
+  ...entry,
+  type: 'directory',
+  children: [],
+};
+
+type RenderNodeOverrides = Partial<{
+  entry: TreeEntry;
+  compact: boolean;
+  onOpenActions: (entry: TreeEntry, anchorRect: DOMRect) => void;
+  onContextMenu: (entry: TreeEntry, event: React.MouseEvent) => void;
+  onSelect: (path: string) => void;
+  onToggleDir: (path: string) => void;
+}>;
+
+function renderNode(overrides: RenderNodeOverrides = {}) {
   return render(
     <FileTreeNode
       entry={entry}
@@ -86,5 +100,88 @@ describe('FileTreeNode', () => {
     });
 
     expect(row.setPointerCapture).not.toHaveBeenCalled();
+  });
+
+  it('renders compact actions button that opens actions without selecting the row', () => {
+    const onSelect = vi.fn();
+    const onToggleDir = vi.fn();
+    const onOpenActions = vi.fn();
+    renderNode({
+      entry: directoryEntry,
+      compact: true,
+      onSelect,
+      onToggleDir,
+      onOpenActions,
+    });
+
+    const label = `Open actions for ${directoryEntry.name}`;
+    const button = screen.getByRole('button', { name: label });
+    const anchorRect = {
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+      top: 1,
+      left: 2,
+      bottom: 5,
+      right: 6,
+      toJSON: () => ({}),
+    } as DOMRect;
+    Object.defineProperty(button, 'getBoundingClientRect', {
+      value: () => anchorRect,
+    });
+
+    fireEvent.click(button);
+
+    expect(onOpenActions).toHaveBeenCalledWith(directoryEntry, anchorRect);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onToggleDir).not.toHaveBeenCalled();
+  });
+
+  it('does not render compact actions button outside compact mode', () => {
+    const onOpenActions = vi.fn();
+    renderNode({ onOpenActions });
+
+    const label = `Open actions for ${entry.name}`;
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+  });
+
+  it('suppresses the browser context menu on the compact actions button', () => {
+    const onContextMenu = vi.fn();
+    renderNode({
+      compact: true,
+      onOpenActions: vi.fn(),
+      onContextMenu,
+    });
+
+    const button = screen.getByRole('button', { name: `Open actions for ${entry.name}` });
+
+    expect(fireEvent.contextMenu(button)).toBe(false);
+    expect(onContextMenu).not.toHaveBeenCalled();
+  });
+
+  it('does not let Enter on the compact actions button trigger the row key handler', () => {
+    const onToggleDir = vi.fn();
+    renderNode({
+      entry: directoryEntry,
+      compact: true,
+      onOpenActions: vi.fn(),
+      onToggleDir,
+    });
+
+    const button = screen.getByRole('button', { name: `Open actions for ${directoryEntry.name}` });
+
+    fireEvent.keyDown(button, { key: 'Enter' });
+
+    expect(onToggleDir).not.toHaveBeenCalled();
+  });
+
+  it('uses a shrinkable filename region so compact actions remain accessible on narrow rows', () => {
+    renderNode({
+      compact: true,
+      onOpenActions: vi.fn(),
+    });
+
+    expect(screen.getByText(entry.name)).toHaveClass('flex-1', 'min-w-0', 'truncate');
   });
 });
