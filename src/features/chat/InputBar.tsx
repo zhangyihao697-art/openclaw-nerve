@@ -590,6 +590,13 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
     }
   }, [uploadsEnabled, stagedAttachments]);
 
+  const syncSlashStateFromInput = useCallback((input: HTMLTextAreaElement) => {
+    const nextQuery = getSlashCommandQuery(input.value, input.selectionStart ?? input.value.length);
+    setSlashCommandQuery(nextQuery);
+    if (nextQuery === null) setDismissedSlashQuery(null);
+    setSelectedSlashIndex(0);
+  }, []);
+
   const injectComposerText = useCallback((text: string, mode: 'replace' | 'append' = 'append') => {
     const input = inputRef.current;
     if (!input) return;
@@ -598,12 +605,13 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
       ? mergeAddToChatText(input.value, text)
       : text;
     setDraftText(input.value);
+    syncSlashStateFromInput(input);
     resizeInput();
     focusInput();
     scheduleDeferredResize();
     input.setSelectionRange(input.value.length, input.value.length);
     resetTabCompletion();
-  }, [focusInput, resetTabCompletion, resizeInput, scheduleDeferredResize]);
+  }, [focusInput, resetTabCompletion, resizeInput, scheduleDeferredResize, syncSlashStateFromInput]);
 
   // Fetch current language for voice phrase matching
   const [voiceLang, setVoiceLang] = useState('en');
@@ -676,9 +684,11 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
         inputRef.current.style.opacity = '0.5';
         inputRef.current.style.height = 'auto';
         inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 160) + 'px';
+        syncSlashStateFromInput(inputRef.current);
       } else {
         inputRef.current.value = '';
         inputRef.current.style.height = 'auto';
+        syncSlashStateFromInput(inputRef.current);
       }
     } else {
       // Clear provisional styling when not recording
@@ -689,9 +699,10 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
       if (voiceState === 'transcribing' || hadVoicePreviewStyling) {
         inputRef.current.value = '';
         inputRef.current.style.height = 'auto';
+        syncSlashStateFromInput(inputRef.current);
       }
     }
-  }, [interimTranscript, liveTranscriptionPreview, voiceState]);
+  }, [interimTranscript, liveTranscriptionPreview, voiceState, syncSlashStateFromInput]);
 
   const processFiles = useCallback(async (files: FileList | File[]) => {
     const selected = Array.from(files);
@@ -1320,6 +1331,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
         e.preventDefault();
         input.value = entry;
         setDraftText(entry);
+        syncSlashStateFromInput(input);
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 160) + 'px';
         input.setSelectionRange(input.value.length, input.value.length);
@@ -1341,6 +1353,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
           input.value = '';
           setDraftText('');
         }
+        syncSlashStateFromInput(input);
         input.style.height = 'auto';
         input.style.height = Math.min(input.scrollHeight, 160) + 'px';
         input.setSelectionRange(input.value.length, input.value.length);
@@ -1352,12 +1365,7 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
     if (!inputRef.current) return;
     const input = inputRef.current;
     setDraftText(input.value);
-    const nextQuery = getSlashCommandQuery(input.value, input.selectionStart);
-    setSlashCommandQuery(nextQuery);
-    if (nextQuery === null) {
-      setDismissedSlashQuery(null);
-    }
-    setSelectedSlashIndex(0);
+    syncSlashStateFromInput(input);
     resetTabCompletion();
     clearVoiceError();
     resizeInput();
