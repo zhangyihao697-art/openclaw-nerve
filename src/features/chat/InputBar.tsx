@@ -1190,6 +1190,9 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
         input.style.height = 'auto';
       }
       setDraftText('');
+      setSlashCommandQuery(null);
+      setDismissedSlashQuery(null);
+      setSelectedSlashIndex(0);
 
       await onSend(text || '', inlineAttachments.length > 0 ? inlineAttachments : undefined, uploadPayload);
       clearStagedAttachments();
@@ -1224,7 +1227,9 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
     input.style.height = Math.min(input.scrollHeight, 160) + 'px';
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
+    setDraftText(input.value);
     setSlashCommandQuery(null);
+    setDismissedSlashQuery(null);
     setSelectedSlashIndex(0);
   }, []);
 
@@ -1347,7 +1352,11 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
     if (!inputRef.current) return;
     const input = inputRef.current;
     setDraftText(input.value);
-    setSlashCommandQuery(getSlashCommandQuery(input.value, input.selectionStart));
+    const nextQuery = getSlashCommandQuery(input.value, input.selectionStart);
+    setSlashCommandQuery(nextQuery);
+    if (nextQuery === null) {
+      setDismissedSlashQuery(null);
+    }
     setSelectedSlashIndex(0);
     resetTabCompletion();
     clearVoiceError();
