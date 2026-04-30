@@ -1262,7 +1262,8 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(function Input
         setSelectedSlashIndex((index) => (index - 1 + slashSuggestions.length) % slashSuggestions.length);
         return;
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
+      // Only autocomplete on plain Enter/Tab (no modifiers) to preserve send shortcuts
+      if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) || (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.shiftKey)) {
         e.preventDefault();
         applySlashCommand(slashSuggestions[selectedSlashIndex]);
         return;
